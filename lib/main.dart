@@ -1,115 +1,299 @@
 import 'package:flutter/material.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
+import 'package:in_app_purchase_android/billing_client_wrappers.dart';
+import 'package:in_app_purchase_android/in_app_purchase_android.dart';
+import 'package:in_app_purchase_storekit/in_app_purchase_storekit.dart';
+import 'package:in_app_purchase_storekit/store_kit_wrappers.dart';
+
+import 'dart:async';
 
 void main() {
   runApp(const MyApp());
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
 
-  // This widget is the root of your application.
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  //We will be subscribing to the stream type List<PurchaseDetails>
+  late StreamSubscription<List<PurchaseDetails>> subscription;
+
+  bool isPlatformAvailable = false;
+  String purchaseStatus = 'Idle';
+
+  @override
+  void initState() {
+    //Initialize the stream from InAppPurchase instance
+    final Stream<List<PurchaseDetails>> purchaseUpdated =
+        InAppPurchase.instance.purchaseStream;
+
+    //We subscribe to the stream and everytime we make a purchase a value of
+    //List<PurchaseDetails> will be passed to that stream
+    subscription = purchaseUpdated.listen(
+      (purchaseDetailsList) {
+        listenToPurchaseUpdated(purchaseDetailsList);
+      },
+      onDone: () {
+        subscription.cancel();
+      },
+      onError: (error) {},
+    );
+
+    super.initState();
+  }
+
+  @override
+  void dispose() {
+    subscription.cancel();
+    super.dispose();
+  }
+
+  //This is a function to buy a product. It receives a Set of product IDs that
+  //you specified in your Google Play Console for your app. BuildContext is used
+  //to display SnackBar.
+  Future<void> buyProduct(Set<String> IDs, BuildContext context) async {
+    try {
+      //Check if platform is available
+      final bool available = await InAppPurchase.instance.isAvailable();
+
+      //If platform is not available we display error
+      if (!available) {
+        isPlatformAvailable = false;
+        showAlert(context, Colors.red, "Cant initialize platform!");
+        return;
+      }
+
+      //If platform is available we set bool variable isPlatformAvailabel to true
+      //Value will also update on screen
+      setState(() {
+        isPlatformAvailable = true;
+      });
+
+      //Assign provided IDs to a new Set of IDs
+      Set<String> listOfProductIDs = IDs;
+
+      //Get the details of products that have their IDs listed in listOfProductIDs
+      final ProductDetailsResponse response =
+          await InAppPurchase.instance.queryProductDetails(listOfProductIDs);
+
+      //We check if there was no error getting details of products
+      if (response.error != null) {
+        showAlert(context, Colors.red, "Error: ${response.error.toString()}");
+        isPlatformAvailable = false;
+        return;
+      }
+
+      //This will execute if some IDs havent been found
+      if (response.notFoundIDs.isNotEmpty) {
+        showAlert(context, Colors.red, "Didn't find product with given IDs!");
+        isPlatformAvailable = false;
+        return;
+      }
+
+      //Get found products from response. You can fetch many products or just one,
+      //it depends on how many ids you add in Set above
+      List<ProductDetails> products = response.productDetails;
+
+      //You can retrieve many products, here i will be working with the first product
+      //in the list because im passing only 1 id to the Set and getting only 1 product back.
+      final ProductDetails productDetails = products[0];
+
+      //create PurchaseParam from the product you selected from the list above.
+      final PurchaseParam purchaseParam =
+          PurchaseParam(productDetails: productDetails);
+
+      //Finally you buy your product.
+      //NOTE: if your product is consumable make sure to execute .buyConsumableMethod,
+      //if your product is non-consumable make sure to execute .buyNonConsumable method
+      //otherwise you will get an error.
+
+      //IMPORTANT: if your product is consumable you need to consume it when the user buys it
+      //otherwise they will be stuck and wont be able to buy this product anymore
+      //the method .buyConsumable has a parameter autoConsume which is a bool
+      //indicating if the product should be auto consumed. The product below is auto consumed.
+      //In the official docs of the in app purchases for Flutter it is advised to always
+      //verify the purchase before delivering the product.
+      //Check the listenToPurchaseUpdated method to see how to consume it after verification
+      await InAppPurchase.instance
+          .buyConsumable(purchaseParam: purchaseParam, autoConsume: true);
+    } on Exception catch (e) {
+      showAlert(context, Colors.red, e.toString());
+    }
+  }
+
+  //We need a separate method for Subscriptions.
+  //NOTE: Subscriptions are of type NonConsumable so you need to call .buyNonConsumable
+  //otherwise you will get an error. Everything is the same like in the above method
+  //excpet the buyNonConsumable call at the end.
+  Future<void> buySubscription(Set<String> IDs, BuildContext context) async {
+    try {
+      final bool available = await InAppPurchase.instance.isAvailable();
+
+      if (!available) {
+        isPlatformAvailable = false;
+        showAlert(context, Colors.red, "Cant initialize platform!");
+        return;
+      }
+
+      setState(() {
+        isPlatformAvailable = true;
+      });
+
+      Set<String> listOfProductIDs = IDs;
+
+      final ProductDetailsResponse response =
+          await InAppPurchase.instance.queryProductDetails(listOfProductIDs);
+
+      if (response.error != null) {
+        showAlert(context, Colors.red, "Error: ${response.error.toString()}");
+        isPlatformAvailable = false;
+        return;
+      }
+
+      if (response.notFoundIDs.isNotEmpty) {
+        showAlert(
+            context, Colors.red, "Didn't find subscription with given IDs!");
+        isPlatformAvailable = false;
+        return;
+      }
+
+      List<ProductDetails> products = response.productDetails;
+
+      final ProductDetails productDetails = products[0];
+
+      final PurchaseParam purchaseParam =
+          PurchaseParam(productDetails: productDetails);
+
+      //NOTE: Again very important subscriptions are always nonConsumable so make sure you call the correct method
+      //.buyNonConsumable doesn't have the autoConsume param
+      await InAppPurchase.instance
+          .buyNonConsumable(purchaseParam: purchaseParam);
+    } on Exception catch (e) {
+      showAlert(context, Colors.red, e.toString());
+    }
+  }
+
+  //This method executes everytime a new purchase has been made
+  Future<void> listenToPurchaseUpdated(
+      List<PurchaseDetails> purchaseDetailsList) async {
+    //We loop through every purchase in the list
+    try {
+      purchaseDetailsList.forEach(
+        (PurchaseDetails purchaseDetails) async {
+          //If current status of purchase is pending we update the status
+          if (purchaseDetails.status == PurchaseStatus.pending) {
+            //{Replace with your code}
+            setState(() {
+              purchaseStatus = "Pending";
+            });
+
+            //NOTE: here is how you consume the purchase after verifying it
+            //Always consume the purchase if the purchase is consumable so it doesn't
+            //get canceled
+
+            //{uncomment this code}
+            // final InAppPurchase inAppPurchase = InAppPurchase.instance;
+            //
+            // final InAppPurchaseAndroidPlatformAddition androidAddition = inAppPurchase
+            //     .getPlatformAddition<InAppPurchaseAndroidPlatformAddition>();
+            //
+            // await androidAddition.consumePurchase(purchaseDetails);
+          }
+
+          //If current status of purchase is error we display the error and cancel execution
+          if (purchaseDetails.status == PurchaseStatus.error) {
+            //{Replace with your error handling}
+            setState(() {
+              purchaseStatus = "Error ${purchaseDetails.error}";
+            });
+            return;
+          }
+
+          //Here you verify your purchase with your backend. It is advised to do so
+          //in the docs of the in app purchase package
+          if (purchaseDetails.status == PurchaseStatus.purchased ||
+              purchaseDetails.status == PurchaseStatus.restored) {
+            //Here you verify the purchase
+          }
+
+          //IMPORTANT: if the status is pendingCompletePurchase that means that you need to complete
+          //the purchase, otherwise the purchase will be canceled after few minutes
+          //Make sure to always call instance.completePurchase(purchaseDetails)
+          //to finalize the purchase.
+          if (purchaseDetails.pendingCompletePurchase) {
+            await InAppPurchase.instance.completePurchase(purchaseDetails);
+            setState(() {
+              purchaseStatus = "Success";
+            });
+          }
+        },
+      );
+    } catch (e) {
+      setState(() {
+        purchaseStatus = "Error ${e.toString()}";
+      });
+    }
+  }
+
+  void showAlert(BuildContext context, Color bgColor, String message) {
+    SnackBar snackBar = SnackBar(
+      content: Text(message),
+      backgroundColor: bgColor,
+    );
+
+    ScaffoldMessenger.of(context).showSnackBar(snackBar);
+  }
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      debugShowCheckedModeBanner: false,
+      title: 'In App Purchase Example',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // Try running your application with "flutter run". You'll see the
-        // application has a blue toolbar. Then, without quitting the app, try
-        // changing the primarySwatch below to Colors.green and then invoke
-        // "hot reload" (press "r" in the console where you ran "flutter run",
-        // or simply save your changes to "hot reload" in a Flutter IDE).
-        // Notice that the counter didn't reset back to zero; the application
-        // is not restarted.
         primarySwatch: Colors.blue,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
-    );
-  }
-}
-
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
-
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
-
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-    return Scaffold(
-      appBar: AppBar(
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Invoke "debug painting" (press "p" in the console, choose the
-          // "Toggle Debug Paint" action from the Flutter Inspector in Android
-          // Studio, or the "Toggle Debug Paint" command in Visual Studio Code)
-          // to see the wireframe for each widget.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text(
-              'You have pushed the button this many times:',
+      home: Builder(builder: (context) {
+        return Scaffold(
+          appBar: AppBar(
+            title: Text("In App Purchase Example"),
+          ),
+          body: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text("Platform available: ${isPlatformAvailable}"),
+                const SizedBox(
+                  height: 5,
+                ),
+                Text("Purchase status: ${purchaseStatus}"),
+                const SizedBox(
+                  height: 30,
+                ),
+                ElevatedButton(
+                  //Pressing this button will start the process to buy the product
+                  onPressed: () {
+                    //Here you pass the IDs of the in app products you created in your Google Play Console
+                    buyProduct({"your_product_id", "your_product_id"}, context);
+                  },
+                  child: Text("Make Purchase"),
+                ),
+                ElevatedButton(
+                  //Pressing this button will start the process to buy the subscription
+                  onPressed: () {
+                    //Here you pass the IDs of the subscriptions you created in your Google Play Console
+                    buySubscription({"your_subscription_id"}, context);
+                  },
+                  child: Text("Subscribe"),
+                )
+              ],
             ),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-          ],
-        ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
+          ),
+        );
+      }),
     );
   }
 }
